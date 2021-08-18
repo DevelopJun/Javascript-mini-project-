@@ -3,11 +3,14 @@
 */
 
 import http from "http";
-import SocketIO from "socket.io";
+import {Server} from "socket.io";
 import WebSocket from "ws";
 import express from "express";
+import { instrument } from "@socket.io/admin-ui";
+// const express = require('express'); 이렇게 작동시켜도 된다. 
 
 const app = express();
+
 
 app.set("view engine", "pug"); // express 객체와 pug를 연결 
 app.set("views", __dirname + "/views" ); //pug 파일을 읽어올 디렉토리 표시 
@@ -22,15 +25,73 @@ app.get("/*", (_, res) => res.redirect("/"));
 const handleListen = () => console.log("Listening on http://localhost:3000");
 
 const httpServer = http.createServer(app); // http 서버이고, 
-const wsServer = SocketIO(httpServer); // Backend socket io 설치
+
+const wsServer = new Server(httpServer, {
+    cors: {
+        origin: ["https://admin.socket.io"],
+        credentials: true
+      }
+}); // Backend socket io 설치
+
+instrument(wsServer, {
+    auth: false
+  });
+  
+
+
+function publicRooms(){
+    const {
+        sockets: {
+            adapter: {sids, rooms},
+        },
+    } = wsServer;
+    // 이기 위에랑 같은 말임.
+    // const sids = wsServer.sockets.adapter.sids;
+    // const rooms = wsServer.sockets.adapter.rooms;
+    const publicRooms = [];
+    rooms.forEach((_, key)=>{
+        if(sids.get(key) === undefined){
+            publicRooms.push(key);
+        }
+    });
+    return publicRooms;
+
+}
+
+function countRoom(roomName){
+    return wsServer.sockets.adapter.rooms.get(roomName)?.size;
+}
+
 
 wsServer.on("connection", (socket)=>{
-    socket.on("enter_room", (rooName, done)=> {
-        console.log(rooName);
-        setTimeout(() => {
-            done("hello from the backend");
-        }, 10000);
+    socket["nickname"] = "Anonymous"
+    socket.onAny((event)=>{
+        console.log(wsServer.sockets.adapter);
+        console.log(`socket Event: ${event}`);
+    })
+    
+    socket.on("enter_room", (roomName, done)=> {
+        socket.join(roomName);
+        done();
+        socket.to(roomName).emit("welcome", socket.nickname, countRoom(roomName));
+        wsServer.sockets.emit("room_change", publicRooms());
     });
+    socket.on("disconnecting", ()=>{
+        socket.rooms.forEach(room => {
+            socket.to(room).emit("bye", socket.nickname, countRoom(room)-1);
+        });
+    });
+
+    socket.on("disconnect", ()=>{
+        wsServer.sockets.emit("room_change", publicRooms());
+    });
+
+    socket.on("new_message", (msg, room, done)=>{
+        console.log("여기 들어와야 하는데");
+        socket.to(room).emit("new_message", `${socket.nickname}: ${msg}`);
+        done();
+    });
+    socket.on("nickname", (nickname)=>(socket["nickname"]) = nickname);
 });
 
 
